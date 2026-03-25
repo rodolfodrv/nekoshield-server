@@ -263,7 +263,7 @@ Respond ONLY with valid JSON in this exact format:
   "brand": "brand name being impersonated or null",
   "reasons": ["reason1", "reason2"],
   "explanation": "one sentence plain english explanation"
-}
+}'
         }
       ];
     }
