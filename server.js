@@ -237,7 +237,7 @@ function analyzeWithAI(url, screenshot) {
 
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
-  console.log('NekoShield API running on port ' + PORT);
+  console.log('NekoShield API running on port ' + PORT); 
   console.log('GOOGLE_API_KEY present: ' + !!GOOGLE_API_KEY);
   console.log('ANTHROPIC_API_KEY present: ' + !!ANTHROPIC_API_KEY);
 });
