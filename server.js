@@ -264,15 +264,6 @@ Respond ONLY with valid JSON in this exact format:
   "reasons": ["reason1", "reason2"],
   "explanation": "one sentence plain english explanation"
 }
-
-Respond ONLY with valid JSON in this exact format:
-{
-  "isPhishing": true/false,
-  "confidence": 0-100,
-  "brand": "brand name being impersonated or null",
-  "reasons": ["reason1", "reason2"],
-  "explanation": "one sentence plain english explanation"
-}`
         }
       ];
     }
