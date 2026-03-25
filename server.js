@@ -244,6 +244,8 @@ Respond ONLY with valid JSON in this exact format:
           type: 'text',
           text: `You are NekoShield, a phishing detection AI. Analyze this URL for phishing threats: ${url}
 
+You are NekoShield, an aggressive phishing detection AI. Analyze this URL for phishing threats: ${url}
+
 Check for:
 1. Brand impersonation - does the URL contain brand names like PayPal, Amazon, Coinbase, Chase, Apple, Microsoft, Netflix, Bank of America, Mercado Libre, Binance while NOT being the official domain
 2. Suspicious patterns - words like: secure, verify, login, account, update, confirm, alert, suspend, cancel combined with brand names in the domain
@@ -253,6 +255,15 @@ Check for:
 6. Urgency language in URL - words like: urgent, suspend, cancel, restore, confirm
 
 Be AGGRESSIVE in detection. If the URL has ANY combination of a brand name + suspicious pattern, mark it as phishing with high confidence. When in doubt, flag it.
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "isPhishing": true/false,
+  "confidence": 0-100,
+  "brand": "brand name being impersonated or null",
+  "reasons": ["reason1", "reason2"],
+  "explanation": "one sentence plain english explanation"
+}
 
 Respond ONLY with valid JSON in this exact format:
 {
