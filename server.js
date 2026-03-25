@@ -10,8 +10,19 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 app.get('/', (req, res) => {
-  res.json({ status: 'NekoShield API running 🛡️' });
+  res.json({ 
+    status: 'NekoShield API running 🛡️',
+    hasGoogle: !!GOOGLE_API_KEY,
+    hasAnthropic: !!ANTHROPIC_API_KEY,
+    googleLength: GOOGLE_API_KEY ? GOOGLE_API_KEY.length : 0,
+    anthropicLength: ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.length : 0
+  });
 });
+```
+
+Commit, espera el redeploy y luego abre:
+```
+https://nekoshield-server-production.up.railway.app
 
 app.post('/analyze', async (req, res) => {
   const { url, screenshot } = req.body;
