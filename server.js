@@ -245,10 +245,14 @@ Respond ONLY with valid JSON in this exact format:
           text: `You are NekoShield, a phishing detection AI. Analyze this URL for phishing threats: ${url}
 
 Check for:
-1. Brand impersonation (does it pretend to be Amazon, PayPal, Coinbase, banks, etc.)
-2. Suspicious patterns (secure-, login-, verify-, account- combined with brand names)
-3. Typosquatting (paypaI.com, amaz0n.com, etc.)
-4. Suspicious TLDs for financial sites
+1. Brand impersonation - does the URL contain brand names like PayPal, Amazon, Coinbase, Chase, Apple, Microsoft, Netflix, Bank of America, Mercado Libre, Binance while NOT being the official domain
+2. Suspicious patterns - words like: secure, verify, login, account, update, confirm, alert, suspend, cancel combined with brand names in the domain
+3. Typosquatting - paypaI.com (capital I instead of l), amaz0n.com, g00gle.com
+4. Suspicious TLDs for financial sites - .net .info .xyz .online .site instead of .com
+5. Subdomain tricks - paypal.com.fake-site.net (real domain is fake-site.net NOT paypal.com)
+6. Urgency language in URL - words like: urgent, suspend, cancel, restore, confirm
+
+Be AGGRESSIVE in detection. If the URL has ANY combination of a brand name + suspicious pattern, mark it as phishing with high confidence. When in doubt, flag it.
 
 Respond ONLY with valid JSON in this exact format:
 {
