@@ -53,7 +53,8 @@ app.post('/analyze', async function(req, res) {
         results.explanation = checks[2].value.explanation;
       }
     } else {
-      var aiResult = await analyzeWithAI(null, screenshot);
+      var imageType = req.body.imageType || 'image/jpeg';
+      var aiResult = await analyzeWithAI(null, screenshot, imageType);
       aiResult.signals.forEach(function(s) { results.signals.push(s); });
       results.score += aiResult.score;
       results.brand = aiResult.brand;
@@ -149,7 +150,8 @@ function checkWhois(url) {
   });
 }
 
-function analyzeWithAI(url, screenshot) {
+function analyzeWithAI(url, screenshot, imageType) {
+  imageType = imageType || 'image/jpeg';
   return new Promise(function(resolve) {
     if (!ANTHROPIC_API_KEY) {
       resolve({ signals: [{ type: 'warning', label: 'AI Analysis', value: 'API key not configured' }], score: 0, brand: null, explanation: null });
@@ -160,7 +162,7 @@ function analyzeWithAI(url, screenshot) {
 
     if (screenshot) {
       content = [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: screenshot } },
+        { type: 'image', source: { type: 'base64', media_type: imageType, data: screenshot } },
         { type: 'text', text: 'You are NekoShield, a phishing detection AI. Analyze this screenshot for phishing threats. Look for fake brand logos, suspicious URLs, urgency tactics, requests for credentials. Respond ONLY with valid JSON no markdown: {"isPhishing": true, "confidence": 95, "brand": "PayPal", "detectedUrl": "http://fake.com", "reasons": ["reason1"], "explanation": "one sentence"}' }
       ];
     } else {
@@ -237,7 +239,7 @@ function analyzeWithAI(url, screenshot) {
 
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
-  console.log('NekoShield API running on port ' + PORT); 
+  console.log('NekoShield API running on port ' + PORT);
   console.log('GOOGLE_API_KEY present: ' + !!GOOGLE_API_KEY);
   console.log('ANTHROPIC_API_KEY present: ' + !!ANTHROPIC_API_KEY);
 });
