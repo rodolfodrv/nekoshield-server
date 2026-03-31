@@ -237,6 +237,175 @@ function analyzeWithAI(url, screenshot, imageType) {
   });
 }
 
+// WhatsApp Bot endpoint
+app.use(express.urlencoded({ extended: false }));
+
+app.post('/whatsapp', async function(req, res) {
+  var TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+  var TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+  var TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
+
+  var incomingMsg = req.body.Body || '';
+  var fromNumber = req.body.From || '';
+  var numMedia = parseInt(req.body.NumMedia || '0');
+
+  console.log('WhatsApp message from: ' + fromNumber);
+  console.log('Message: ' + incomingMsg);
+  console.log('Media count: ' + numMedia);
+
+  var replyText = '';
+
+  try {
+    // Check if user sent an image
+    if (numMedia > 0) {
+      var mediaUrl = req.body.MediaUrl0;
+      var mediaType = req.body.MediaContentType0 || 'image/jpeg';
+
+      // Download image from Twilio
+      var imageBase64 = await downloadImageAsBase64(mediaUrl, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+      if (imageBase64) {
+        var analysis = await analyzeWithAI(null, imageBase64, mediaType);
+        replyText = formatWhatsAppReply(analysis, null);
+      } else {
+        replyText = '⚠️ Could not process the image. Please try again.';
+      }
+
+    } else if (incomingMsg.trim()) {
+      var msg = incomingMsg.trim();
+
+      // Check if it looks like a URL
+      if (msg.startsWith('http://') || msg.startsWith('https://') || msg.includes('.com') || msg.includes('.net') || msg.includes('.org')) {
+        var url = msg;
+        if (!url.startsWith('http')) url = 'https://' + url;
+
+        var checks = await Promise.allSettled([
+          checkGoogleSafeBrowsing(url),
+          checkWhois(url),
+          analyzeWithAI(url, null)
+        ]);
+
+        var combinedResult = { score: 0, signals: [], brand: null, explanation: null, verdict: 'safe' };
+        checks.forEach(function(check) {
+          if (check.status === 'fulfilled') {
+            check.value.signals.forEach(function(s) { combinedResult.signals.push(s); });
+            combinedResult.score += check.value.score || 0;
+            if (check.value.brand) combinedResult.brand = check.value.brand;
+            if (check.value.explanation) combinedResult.explanation = check.value.explanation;
+          }
+        });
+
+        combinedResult.score = Math.min(100, combinedResult.score);
+        if (combinedResult.score >= 70) combinedResult.verdict = 'dangerous';
+        else if (combinedResult.score >= 40) combinedResult.verdict = 'suspicious';
+
+        replyText = formatWhatsAppReply(combinedResult, url);
+
+      } else if (msg.toLowerCase() === 'help' || msg.toLowerCase() === 'hola' || msg.toLowerCase() === 'hi' || msg.toLowerCase() === 'hello') {
+        replyText = '🛡️ *NekoShield* — Phishing Detection\n\nSend me:\n• A suspicious *link* to analyze it\n• A *screenshot* of a suspicious message\n\nI will tell you if it\'s safe or dangerous! 🐱';
+      } else {
+        replyText = '🛡️ *NekoShield* here!\n\nSend me a suspicious *link* or a *screenshot* of a message and I\'ll analyze it for you.\n\nExample: https://suspicious-link.com';
+      }
+    } else {
+      replyText = '🛡️ *NekoShield* here! Send me a link or screenshot to analyze. Type *help* for more info.';
+    }
+
+  } catch (error) {
+    console.error('WhatsApp handler error:', error);
+    replyText = '⚠️ Something went wrong. Please try again in a moment.';
+  }
+
+  // Send reply via Twilio
+  await sendWhatsAppReply(fromNumber, replyText, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER);
+  res.status(200).send('OK');
+});
+
+function formatWhatsAppReply(analysis, url) {
+  var verdict = analysis.verdict || 'safe';
+  var score = Math.min(100, analysis.score || 0);
+  var reply = '';
+
+  if (verdict === 'dangerous') {
+    reply = '🚨 *HIGH RISK — Do NOT proceed*\n';
+    reply += 'Threat Level: ' + score + '%\n\n';
+  } else if (verdict === 'suspicious') {
+    reply = '⚠️ *SUSPICIOUS — Proceed with caution*\n';
+    reply += 'Threat Level: ' + score + '%\n\n';
+  } else {
+    reply = '✅ *SECURE — No threats detected*\n\n';
+  }
+
+  if (analysis.brand) {
+    reply += '🎭 Impersonating: *' + analysis.brand + '*\n';
+  }
+
+  if (analysis.explanation) {
+    reply += '📋 ' + analysis.explanation + '\n';
+  }
+
+  reply += '\n_Analyzed by NekoShield • nekoshield.com_';
+  return reply;
+}
+
+function downloadImageAsBase64(mediaUrl, accountSid, authToken) {
+  return new Promise(function(resolve) {
+    var auth = Buffer.from(accountSid + ':' + authToken).toString('base64');
+    var urlObj = new URL(mediaUrl);
+    var options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: 'GET',
+      headers: { 'Authorization': 'Basic ' + auth }
+    };
+    var req = https.request(options, function(response) {
+      var chunks = [];
+      response.on('data', function(chunk) { chunks.push(chunk); });
+      response.on('end', function() {
+        var buffer = Buffer.concat(chunks);
+        resolve(buffer.toString('base64'));
+      });
+    });
+    req.on('error', function() { resolve(null); });
+    req.end();
+  });
+}
+
+function sendWhatsAppReply(to, body, accountSid, authToken, fromNumber) {
+  return new Promise(function(resolve) {
+    if (!accountSid || !authToken || !fromNumber) {
+      console.log('Twilio credentials missing');
+      resolve();
+      return;
+    }
+    var postData = 'To=' + encodeURIComponent(to) + '&From=' + encodeURIComponent('whatsapp:' + fromNumber) + '&Body=' + encodeURIComponent(body);
+    var auth = Buffer.from(accountSid + ':' + authToken).toString('base64');
+    var options = {
+      hostname: 'api.twilio.com',
+      path: '/2010-04-01/Accounts/' + accountSid + '/Messages.json',
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + auth,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+    var req = https.request(options, function(response) {
+      var data = '';
+      response.on('data', function(chunk) { data += chunk; });
+      response.on('end', function() {
+        console.log('Twilio response:', data);
+        resolve();
+      });
+    });
+    req.on('error', function(e) {
+      console.error('Twilio error:', e);
+      resolve();
+    });
+    req.write(postData);
+    req.end();
+  });
+}
+
 var PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
   console.log('NekoShield API running on port ' + PORT);
