@@ -85,9 +85,27 @@ app.get('/', function(req, res) {
     status: 'NekoShield API running',
     hasGoogle: !!GOOGLE_API_KEY,
     hasAnthropic: !!ANTHROPIC_API_KEY,
-    hasSupabase: !!SUPABASE_URL
+    hasSupabase: !!SUPABASE_URL,
+    hasSupabaseKey: !!SUPABASE_KEY
   });
 });
+
+app.get('/test-db', async function(req, res) {
+  var result = await supabaseRequest('POST', 'analysis_history', {
+    email: 'test@test.com',
+    ip_address: '127.0.0.1',
+    type: 'test',
+    result: 'safe',
+    score: 0,
+    brand: null
+  });
+  res.json({ result: result });
+});
+```
+
+Guarda, espera el deploy y luego ve a:
+```
+https://nekoshield-server.onrender.com/test-db
 
 // ─── REGISTER / LOGIN ───────────────────────────────────────────────────────
 
