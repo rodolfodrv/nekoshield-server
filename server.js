@@ -101,11 +101,8 @@ app.get('/test-db', async function(req, res) {
   });
   res.json({ result: result });
 });
-```
 
-Guarda, espera el deploy y luego ve a:
-```
-https://nekoshield-server.onrender.com/test-db
+
 
 // ─── REGISTER / LOGIN ───────────────────────────────────────────────────────
 
