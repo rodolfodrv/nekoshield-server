@@ -488,7 +488,7 @@ app.post('/create-order', async function(req, res) {
       custom_id: email + '|' + plan
     }],
     application_context: {
-      return_url: 'https://nekoshield.com/success',
+      return_url: 'https://nekoshield.com',
       cancel_url: 'https://nekoshield.com'
     }
   });
