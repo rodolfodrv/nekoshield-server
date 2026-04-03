@@ -434,7 +434,140 @@ function sendWhatsAppReply(to, body, accountSid, authToken, fromNumber) {
     req.end();
   });
 }
+// ─── PAYPAL ─────────────────────────────────────────────────────────────────
 
+async function getPaypalToken() {
+  return new Promise(function(resolve) {
+    var auth = Buffer.from(PAYPAL_CLIENT_ID + ':' + PAYPAL_SECRET).toString('base64');
+    var body = 'grant_type=client_credentials';
+    var options = {
+      hostname: 'api-m.sandbox.paypal.com',
+      path: '/v1/oauth2/token',
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + auth,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    var req = https.request(options, function(response) {
+      var data = '';
+      response.on('data', function(chunk) { data += chunk; });
+      response.on('end', function() {
+        try { resolve(JSON.parse(data).access_token); }
+        catch(e) { resolve(null); }
+      });
+    });
+    req.on('error', function() { resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
+app.post('/create-order', async function(req, res) {
+  var plan = req.body.plan;
+  var email = req.body.email;
+
+  var plans = {
+    starter: { amount: '4.99', tokens: 100, name: 'NekoShield Starter — 100 NekoTokens' },
+    pro:     { amount: '14.99', tokens: 500, name: 'NekoShield Pro — 500 NekoTokens' },
+    business:{ amount: '19.99', tokens: 1000, name: 'NekoShield Business — 1,000 NekoTokens' }
+  };
+
+  var selected = plans[plan];
+  if (!selected) return res.status(400).json({ error: 'Invalid plan' });
+
+  var token = await getPaypalToken();
+  if (!token) return res.status(500).json({ error: 'PayPal auth failed' });
+
+  var orderBody = JSON.stringify({
+    intent: 'CAPTURE',
+    purchase_units: [{
+      amount: { currency_code: 'USD', value: selected.amount },
+      description: selected.name,
+      custom_id: email + '|' + plan
+    }],
+    application_context: {
+      return_url: 'https://nekoshield.com/success',
+      cancel_url: 'https://nekoshield.com'
+    }
+  });
+
+  var options = {
+    hostname: 'api-m.sandbox.paypal.com',
+    path: '/v2/checkout/orders',
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(orderBody)
+    }
+  };
+
+  var req2 = https.request(options, function(response) {
+    var data = '';
+    response.on('data', function(chunk) { data += chunk; });
+    response.on('end', function() {
+      try {
+        var order = JSON.parse(data);
+        var approveUrl = order.links.find(function(l) { return l.rel === 'approve'; });
+        res.json({ orderID: order.id, approveUrl: approveUrl ? approveUrl.href : null });
+      } catch(e) { res.status(500).json({ error: 'Order creation failed' }); }
+    });
+  });
+  req2.on('error', function() { res.status(500).json({ error: 'Request failed' }); });
+  req2.write(orderBody);
+  req2.end();
+});
+
+app.post('/capture-order', async function(req, res) {
+  var orderID = req.body.orderID;
+  var email = req.body.email;
+
+  var token = await getPaypalToken();
+  if (!token) return res.status(500).json({ error: 'PayPal auth failed' });
+
+  var options = {
+    hostname: 'api-m.sandbox.paypal.com',
+    path: '/v2/checkout/orders/' + orderID + '/capture',
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'Content-Length': 0
+    }
+  };
+
+  var req2 = https.request(options, function(response) {
+    var data = '';
+    response.on('data', function(chunk) { data += chunk; });
+    response.on('end', async function() {
+      try {
+        var capture = JSON.parse(data);
+        if (capture.status === 'COMPLETED') {
+          var customId = capture.purchase_units[0].payments.captures[0].custom_id;
+          var parts = customId.split('|');
+          var userEmail = parts[0];
+          var plan = parts[1];
+          var tokensMap = { starter: 100, pro: 500, business: 1000 };
+          var tokensToAdd = tokensMap[plan] || 0;
+
+          var user = await getUserTokens(userEmail);
+          if (user) {
+            await supabaseRequest('PATCH', 'user_tokens?email=eq.' + encodeURIComponent(userEmail), {
+              tokens: user.tokens + tokensToAdd
+            });
+          }
+          res.json({ success: true, tokensAdded: tokensToAdd });
+        } else {
+          res.status(400).json({ error: 'Payment not completed' });
+        }
+      } catch(e) { res.status(500).json({ error: 'Capture failed' }); }
+    });
+  });
+  req2.on('error', function() { res.status(500).json({ error: 'Request failed' }); });
+  req2.end();
+});
 // ─── START ──────────────────────────────────────────────────────────────────
 
 var PORT = process.env.PORT || 3000;
