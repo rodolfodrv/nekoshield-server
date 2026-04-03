@@ -51,7 +51,7 @@ async function getUserTokens(email) {
   return null;
 }
 
-async function createUser(email) {
+
   async function createUser(email) {
   var result = await supabaseRequest('POST', 'user_tokens', { email: email, tokens: 50, total_checks: 0 });
   if (result && result.length > 0) return result[0];
