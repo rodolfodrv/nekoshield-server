@@ -11,6 +11,8 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 
 // ─── SUPABASE HELPERS ───────────────────────────────────────────────────────
 
