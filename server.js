@@ -52,7 +52,8 @@ async function getUserTokens(email) {
 }
 
 async function createUser(email) {
-  var result = await supabaseRequest('POST', 'user_tokens', { email: email, tokens: 10, total_checks: 0 });
+  async function createUser(email) {
+  var result = await supabaseRequest('POST', 'user_tokens', { email: email, tokens: 50, total_checks: 0 });
   if (result && result.length > 0) return result[0];
   return null;
 }
