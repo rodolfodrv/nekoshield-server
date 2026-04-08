@@ -568,6 +568,76 @@ app.post('/capture-order', async function(req, res) {
   req2.on('error', function() { res.status(500).json({ error: 'Request failed' }); });
   req2.end();
 });
+// ─── EXTENSION ANALYZE ──────────────────────────────────────────────────────
+
+async function checkOpenPhish(url) {
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: 'openphish.com',
+      path: '/feed.txt',
+      method: 'GET'
+    };
+    var req = https.request(options, function(response) {
+      var data = '';
+      response.on('data', function(chunk) { data += chunk; });
+      response.on('end', function() {
+        var lines = data.split('\n');
+        var found = lines.some(function(line) {
+          return line.trim() && url.includes(line.trim());
+        });
+        if (found) {
+          resolve({ signals: [{ type: 'danger', label: 'OpenPhish', value: 'Listed as active phishing site' }], score: 80 });
+        } else {
+          resolve({ signals: [{ type: 'safe', label: 'OpenPhish', value: 'Not in phishing database' }], score: 0 });
+        }
+      });
+    });
+    req.on('error', function() { resolve({ signals: [], score: 0 }); });
+    req.end();
+  });
+}
+
+app.post('/extension-analyze', async function(req, res) {
+  var url = req.body.url;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  try {
+    var results = { url: url, score: 0, signals: [], verdict: 'safe' };
+
+    // Step 1: Google Safe Browsing
+    var googleResult = await checkGoogleSafeBrowsing(url);
+    googleResult.signals.forEach(function(s) { results.signals.push(s); });
+    results.score += googleResult.score || 0;
+
+    // Step 2: OpenPhish
+    var openPhishResult = await checkOpenPhish(url);
+    openPhishResult.signals.forEach(function(s) { results.signals.push(s); });
+    results.score += openPhishResult.score || 0;
+
+    // Step 3: Domain Age
+    var whoisResult = await checkWhois(url);
+    whoisResult.signals.forEach(function(s) { results.signals.push(s); });
+    results.score += whoisResult.score || 0;
+
+    results.score = Math.min(100, results.score);
+
+    // Step 4: AI only if score is between 20-69 (ambiguous)
+    if (results.score >= 20 && results.score < 70) {
+      var aiResult = await analyzeWithAI(url, null, null);
+      aiResult.signals.forEach(function(s) { results.signals.push(s); });
+      results.score += aiResult.score || 0;
+      if (aiResult.explanation) results.explanation = aiResult.explanation;
+      results.score = Math.min(100, results.score);
+    }
+
+    if (results.score >= 70) results.verdict = 'dangerous';
+    else if (results.score >= 40) results.verdict = 'suspicious';
+
+    res.json(results);
+  } catch(error) {
+    res.status(500).json({ error: 'Analysis failed' });
+  }
+});
 // ─── START ──────────────────────────────────────────────────────────────────
 
 var PORT = process.env.PORT || 3000;
