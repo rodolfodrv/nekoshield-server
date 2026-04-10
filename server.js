@@ -616,7 +616,16 @@ app.post('/extension-analyze', async function(req, res) {
 
   try {
     var results = { url: url, score: 0, signals: [], verdict: 'safe' };
-
+// Step 0: Check our own Supabase database first
+    var ownDbResult = await checkOwnDatabase(url);
+    if (ownDbResult) {
+      ownDbResult.signals.forEach(function(s) { results.signals.push(s); });
+      results.score += ownDbResult.score || 0;
+      results.score = Math.min(100, results.score);
+      if (results.score >= 70) results.verdict = 'dangerous';
+      else if (results.score >= 40) results.verdict = 'suspicious';
+      return res.json(results);
+    }
     // Step 1: Google Safe Browsing
     var googleResult = await checkGoogleSafeBrowsing(url);
     googleResult.signals.forEach(function(s) { results.signals.push(s); });
