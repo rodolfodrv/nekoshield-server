@@ -654,7 +654,10 @@ app.post('/extension-analyze', async function(req, res) {
 
     if (results.score >= 70) results.verdict = 'dangerous';
     else if (results.score >= 40) results.verdict = 'suspicious';
+// Save to Supabase
+    await saveAnalysis(null, 'extension', 'url', results.verdict, results.score, results.brand);
 
+    res.json(results);
     res.json(results);
   } catch(error) {
     res.status(500).json({ error: 'Analysis failed' });
