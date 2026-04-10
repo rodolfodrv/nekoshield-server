@@ -80,7 +80,20 @@ async function saveAnalysis(email, ip, type, result, score, brand) {
     brand: brand || null
   });
 }
-
+async function checkOwnDatabase(url) {
+  var result = await supabaseRequest('GET', 'analysis_history?url=eq.' + encodeURIComponent(url) + '&order=created_at.desc&limit=1&select=*');
+  if (result && result.length > 0) {
+    var record = result[0];
+    if (record.result === 'dangerous' || record.result === 'suspicious') {
+      return {
+        signals: [{ type: 'danger', label: 'NekoShield Database', value: 'Previously flagged as ' + record.result }],
+        score: record.result === 'dangerous' ? 80 : 40,
+        fromCache: true
+      };
+    }
+  }
+  return null;
+}
 // ─── HEALTH CHECK ───────────────────────────────────────────────────────────
 
 app.get('/', function(req, res) {
