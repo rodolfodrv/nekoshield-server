@@ -658,7 +658,7 @@ app.post('/extension-analyze', async function(req, res) {
     await saveAnalysis(null, 'extension', 'url', results.verdict, results.score, results.brand);
 
     res.json(results);
-    res.json(results);
+  
   } catch(error) {
     res.status(500).json({ error: 'Analysis failed' });
   }
