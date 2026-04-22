@@ -768,9 +768,10 @@ app.post('/create-order', async function(req, res) {
   var email = req.body.email;
 
   var plans = {
-    starter: { amount: '4.99', tokens: 100, name: 'NekoShield Starter — 100 NekoTokens' },
-    pro:     { amount: '14.99', tokens: 500, name: 'NekoShield Pro — 500 NekoTokens' },
-    business:{ amount: '19.99', tokens: 1000, name: 'NekoShield Business — 1,000 NekoTokens' }
+    intro:   { amount: '1.00', tokens: 75, name: 'NekoShield Intro — 15 analyses' },
+    starter: { amount: '4.99', tokens: 100, name: 'NekoShield Starter — 20 analyses' },
+    pro:     { amount: '14.99', tokens: 500, name: 'NekoShield Pro — 100 analyses' },
+    business:{ amount: '19.99', tokens: 1000, name: 'NekoShield Business — 200 analyses/month' }
   };
 
   var selected = plans[plan];
@@ -848,7 +849,7 @@ app.post('/capture-order', async function(req, res) {
           var parts = customId.split('|');
           var userEmail = parts[0];
           var plan = parts[1];
-          var tokensMap = { starter: 100, pro: 500, business: 1000 };
+          var tokensMap = { intro: 75, starter: 100, pro: 500, business: 1000 };
           var tokensToAdd = tokensMap[plan] || 0;
 
           var user = await getUserTokens(userEmail);
