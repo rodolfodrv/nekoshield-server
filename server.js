@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const http = require('http');
 
 const app = express();
 app.use(cors());
@@ -53,8 +54,7 @@ async function getUserTokens(email) {
   return null;
 }
 
-
-  async function createUser(email) {
+async function createUser(email) {
   var result = await supabaseRequest('POST', 'user_tokens', { email: email, tokens: 50, total_checks: 0 });
   if (result && result.length > 0) return result[0];
   return null;
@@ -70,16 +70,19 @@ async function deductToken(email) {
   return true;
 }
 
-async function saveAnalysis(email, ip, type, result, score, brand) {
+// FIXED: now saves URL so the cache actually works
+async function saveAnalysis(email, ip, type, result, score, brand, url) {
   await supabaseRequest('POST', 'analysis_history', {
     email: email || null,
     ip_address: ip,
     type: type,
     result: result,
     score: score,
-    brand: brand || null
+    brand: brand || null,
+    url: url || null
   });
 }
+
 async function checkOwnDatabase(url) {
   var result = await supabaseRequest('GET', 'analysis_history?url=eq.' + encodeURIComponent(url) + '&order=created_at.desc&limit=1&select=*');
   if (result && result.length > 0) {
@@ -94,6 +97,7 @@ async function checkOwnDatabase(url) {
   }
   return null;
 }
+
 // ─── HEALTH CHECK ───────────────────────────────────────────────────────────
 
 app.get('/', function(req, res) {
@@ -104,9 +108,6 @@ app.get('/', function(req, res) {
     hasSupabase: !!SUPABASE_URL,
   });
 });
-
-
-
 
 // ─── REGISTER / LOGIN ───────────────────────────────────────────────────────
 
@@ -121,7 +122,7 @@ app.post('/register', async function(req, res) {
 
   var newUser = await createUser(email);
   if (newUser) {
-    res.json({ success: true, tokens: 10, message: 'Account created! You have 10 free NekoTokens.' });
+    res.json({ success: true, tokens: 50, message: 'Account created! You have 50 free NekoTokens.' });
   } else {
     res.status(500).json({ error: 'Could not create account' });
   }
@@ -135,7 +136,255 @@ app.post('/tokens', async function(req, res) {
   res.json({ tokens: user.tokens, total_checks: user.total_checks });
 });
 
-// ─── ANALYZE ────────────────────────────────────────────────────────────────
+// ─── URL PATTERN ANALYSIS (no external API) ─────────────────────────────────
+
+function analyzeUrlPattern(url) {
+  var signals = [];
+  var score = 0;
+
+  try {
+    var parsed = new URL(url);
+    var hostname = parsed.hostname.toLowerCase();
+    var fullUrl = url.toLowerCase();
+    var parts = hostname.split('.');
+    var registeredDomain = parts.slice(-2).join('.');
+
+    // 1. IP address in URL instead of domain
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+      signals.push({ type: 'danger', label: 'URL Analysis', value: 'IP address used instead of domain name' });
+      score += 40;
+    }
+
+    // 2. @ symbol in URL (tricks browser into ignoring left part)
+    if (url.includes('@')) {
+      signals.push({ type: 'danger', label: 'URL Analysis', value: 'Contains @ symbol — common phishing trick' });
+      score += 35;
+    }
+
+    // 3. Punycode / IDN homograph attack
+    if (hostname.includes('xn--')) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Contains international characters that may mimic real domains' });
+      score += 25;
+    }
+
+    // 4. Suspicious TLD (free or commonly abused)
+    var suspiciousTlds = ['.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top',
+      '.click', '.loan', '.work', '.date', '.racing', '.download',
+      '.accountant', '.stream', '.online', '.site', '.tech'];
+    var hasSuspiciousTld = suspiciousTlds.some(function(tld) { return hostname.endsWith(tld); });
+    if (hasSuspiciousTld) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Uses a TLD commonly associated with free or malicious domains' });
+      score += 20;
+    }
+
+    // 5. Excessive subdomains (more than 3 dots = phishing trick like paypal.com.fake.net)
+    var dots = (hostname.match(/\./g) || []).length;
+    if (dots >= 3) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Excessive subdomains detected — common phishing trick (e.g. paypal.com.evil.net)' });
+      score += 25;
+    }
+
+    // 6. Very long URL
+    if (url.length > 100) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Unusually long URL (' + url.length + ' characters)' });
+      score += 10;
+    }
+
+    // 7. Brand name in subdomain (not the real domain)
+    var brands = ['paypal', 'amazon', 'google', 'microsoft', 'apple', 'netflix',
+      'facebook', 'instagram', 'twitter', 'chase', 'coinbase', 'binance',
+      'mercadolibre', 'ebay', 'walmart', 'bancolombia', 'banregio'];
+    var foundBrand = brands.find(function(b) { return fullUrl.includes(b); });
+    if (foundBrand && !registeredDomain.startsWith(foundBrand)) {
+      signals.push({ type: 'danger', label: 'Brand in Subdomain', value: '"' + foundBrand + '" appears in subdomain or path — not the real site' });
+      score += 35;
+    }
+
+    // 8. Brand + dangerous keyword combination
+    var dangerKeywords = ['login', 'verify', 'secure', 'account', 'update',
+      'confirm', 'alert', 'suspend', 'password', 'signin', 'banking', 'validate'];
+    var foundKeyword = dangerKeywords.find(function(k) { return fullUrl.includes(k); });
+    if (foundBrand && foundKeyword) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Suspicious combination: brand name + action keyword ("' + foundKeyword + '")' });
+      score += 15;
+    }
+
+    // 9. Typosquatting — known misspellings of major brands
+    var typoMap = {
+      'paypal':    ['paypa1', 'paypall', 'paypa-l', 'pay-pal', 'paypel', 'payapl'],
+      'google':    ['googie', 'g00gle', 'gooogle', 'googel', 'gogle'],
+      'amazon':    ['amazom', 'arnazon', 'amaz0n', 'amazone', 'amzon'],
+      'microsoft': ['micros0ft', 'microsofl', 'micosoft', 'microsofft'],
+      'apple':     ['app1e', 'appie', 'aple', 'aplle'],
+      'facebook':  ['faceb00k', 'facebok', 'faceboook', 'facbook'],
+      'netflix':   ['netfl1x', 'netfiix', 'netlfix', 'netfliix'],
+      'coinbase':  ['co1nbase', 'coinbas3', 'coinbasse'],
+      'binance':   ['b1nance', 'binanse', 'binanc3'],
+      'instagram': ['1nstagram', 'instagran', 'instagarm']
+    };
+    var foundTypo = null;
+    Object.keys(typoMap).forEach(function(brand) {
+      typoMap[brand].forEach(function(typo) {
+        if (hostname.includes(typo)) foundTypo = brand;
+      });
+    });
+    if (foundTypo) {
+      signals.push({ type: 'danger', label: 'Typosquatting', value: 'Domain mimics "' + foundTypo + '" using a common spelling trick' });
+      score += 40;
+    }
+
+    if (signals.length === 0) {
+      signals.push({ type: 'safe', label: 'URL Analysis', value: 'No suspicious URL patterns detected' });
+    }
+
+  } catch(e) {
+    signals.push({ type: 'warning', label: 'URL Analysis', value: 'Could not parse URL structure' });
+    score += 10;
+  }
+
+  return { signals: signals, score: score };
+}
+
+// ─── SSL CHECK ───────────────────────────────────────────────────────────────
+
+function checkSsl(url) {
+  return new Promise(function(resolve) {
+    try {
+      var parsed = new URL(url);
+      if (parsed.protocol !== 'https:') {
+        resolve({ signals: [{ type: 'danger', label: 'SSL Certificate', value: 'Site does not use HTTPS' }], score: 30 });
+        return;
+      }
+      var options = {
+        hostname: parsed.hostname,
+        port: 443,
+        path: '/',
+        method: 'GET',
+        timeout: 5000,
+        rejectUnauthorized: false
+      };
+      var req = https.request(options, function(response) {
+        try {
+          var cert = response.socket.getPeerCertificate();
+          if (!cert || !cert.valid_from) { resolve({ signals: [], score: 0 }); return; }
+          var issuedDate = new Date(cert.valid_from);
+          var daysSinceIssued = Math.floor((new Date() - issuedDate) / (1000 * 60 * 60 * 24));
+          var issuer = cert.issuer && cert.issuer.O ? cert.issuer.O : '';
+          var freeIssuers = ["Let's Encrypt", 'ZeroSSL', 'Buypass'];
+          var isFreeIssuer = freeIssuers.some(function(f) { return issuer.includes(f); });
+          var signals = [];
+          var score = 0;
+          if (daysSinceIssued < 30 && isFreeIssuer) {
+            signals.push({ type: 'warning', label: 'SSL Certificate', value: 'Certificate issued recently (' + daysSinceIssued + ' days ago) by free provider — common in phishing sites' });
+            score += 20;
+          } else if (daysSinceIssued < 7) {
+            signals.push({ type: 'warning', label: 'SSL Certificate', value: 'Certificate issued only ' + daysSinceIssued + ' days ago' });
+            score += 15;
+          } else {
+            signals.push({ type: 'safe', label: 'SSL Certificate', value: 'Valid certificate from ' + (issuer || 'trusted issuer') });
+          }
+          resolve({ signals: signals, score: score });
+        } catch(e) { resolve({ signals: [], score: 0 }); }
+      });
+      req.on('timeout', function() { req.destroy(); resolve({ signals: [], score: 0 }); });
+      req.on('error', function() {
+        resolve({ signals: [{ type: 'warning', label: 'SSL Certificate', value: 'Could not verify SSL certificate' }], score: 15 });
+      });
+      req.end();
+    } catch(e) { resolve({ signals: [], score: 0 }); }
+  });
+}
+
+// ─── REDIRECT CHECK ──────────────────────────────────────────────────────────
+
+function checkRedirects(url) {
+  return new Promise(function(resolve) {
+    var redirectCount = 0;
+    var maxRedirects = 6;
+
+    function followRedirect(currentUrl) {
+      try {
+        var parsed = new URL(currentUrl);
+        var lib = parsed.protocol === 'https:' ? https : http;
+        var options = {
+          hostname: parsed.hostname,
+          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+          path: (parsed.pathname || '/') + (parsed.search || ''),
+          method: 'HEAD',
+          timeout: 5000,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          rejectUnauthorized: false
+        };
+        var req = lib.request(options, function(response) {
+          if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+            redirectCount++;
+            if (redirectCount >= maxRedirects) {
+              resolve({ signals: [{ type: 'danger', label: 'Redirections', value: 'Too many redirects — suspicious behavior' }], score: 25 });
+              return;
+            }
+            var nextUrl = response.headers.location;
+            if (!nextUrl.startsWith('http')) nextUrl = parsed.origin + nextUrl;
+            followRedirect(nextUrl);
+          } else {
+            if (redirectCount > 2) {
+              resolve({ signals: [{ type: 'warning', label: 'Redirections', value: redirectCount + ' redirects before reaching destination — suspicious' }], score: 20 });
+            } else if (redirectCount > 0) {
+              resolve({ signals: [{ type: 'safe', label: 'Redirections', value: redirectCount + ' redirect(s) — within normal range' }], score: 0 });
+            } else {
+              resolve({ signals: [{ type: 'safe', label: 'Redirections', value: 'No redirects detected' }], score: 0 });
+            }
+          }
+        });
+        req.on('timeout', function() { req.destroy(); resolve({ signals: [], score: 0 }); });
+        req.on('error', function() { resolve({ signals: [], score: 0 }); });
+        req.end();
+      } catch(e) { resolve({ signals: [], score: 0 }); }
+    }
+
+    followRedirect(url);
+  });
+}
+
+// ─── WHITELIST ───────────────────────────────────────────────────────────────
+
+async function isWhitelisted(email, url) {
+  if (!email) return false;
+  try {
+    var domain = new URL(url).hostname.replace('www.', '');
+    var result = await supabaseRequest('GET', 'whitelist?email=eq.' + encodeURIComponent(email) + '&domain=eq.' + encodeURIComponent(domain) + '&select=*');
+    return result && result.length > 0;
+  } catch(e) { return false; }
+}
+
+app.get('/whitelist/:email', async function(req, res) {
+  var email = req.params.email;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  var result = await supabaseRequest('GET', 'whitelist?email=eq.' + encodeURIComponent(email) + '&select=*');
+  res.json(result || []);
+});
+
+app.post('/whitelist/add', async function(req, res) {
+  var email = req.body.email;
+  var url = req.body.url;
+  if (!email || !url) return res.status(400).json({ error: 'Email and URL required' });
+  try {
+    var domain = new URL(url).hostname.replace('www.', '');
+    var existing = await supabaseRequest('GET', 'whitelist?email=eq.' + encodeURIComponent(email) + '&domain=eq.' + encodeURIComponent(domain) + '&select=*');
+    if (existing && existing.length > 0) return res.json({ success: true, message: 'Already in whitelist' });
+    await supabaseRequest('POST', 'whitelist', { email: email, domain: domain });
+    res.json({ success: true, domain: domain });
+  } catch(e) { res.status(400).json({ error: 'Invalid URL' }); }
+});
+
+app.post('/whitelist/remove', async function(req, res) {
+  var email = req.body.email;
+  var domain = req.body.domain;
+  if (!email || !domain) return res.status(400).json({ error: 'Email and domain required' });
+  await supabaseRequest('DELETE', 'whitelist?email=eq.' + encodeURIComponent(email) + '&domain=eq.' + encodeURIComponent(domain));
+  res.json({ success: true });
+});
+
+// ─── ANALYZE (web app) ──────────────────────────────────────────────────────
 
 app.post('/analyze', async function(req, res) {
   var url = req.body.url;
@@ -146,7 +395,6 @@ app.post('/analyze', async function(req, res) {
 
   if (!url && !screenshot) return res.status(400).json({ error: 'URL or screenshot required' });
 
-  // Check tokens if user is logged in
   if (email) {
     var user = await getUserTokens(email);
     if (!user) return res.status(403).json({ error: 'User not found. Please register first.' });
@@ -157,23 +405,49 @@ app.post('/analyze', async function(req, res) {
     var results = { url: url || 'screenshot', score: 0, signals: [], verdict: 'safe', brand: null };
 
     if (url) {
+      // Check whitelist first
+      if (email && await isWhitelisted(email, url)) {
+        results.signals.push({ type: 'safe', label: 'Whitelist', value: 'Domain is in your trusted list' });
+        results.verdict = 'safe';
+        if (email) await deductToken(email);
+        return res.json(results);
+      }
+
+      // Run all checks in parallel (except AI which runs conditionally after)
       var checks = await Promise.allSettled([
+        Promise.resolve(analyzeUrlPattern(url)),
         checkGoogleSafeBrowsing(url),
         checkWhois(url),
-        analyzeWithAI(url, null, null)
+        checkSsl(url),
+        checkRedirects(url)
       ]);
+
       checks.forEach(function(check) {
-        if (check.status === 'fulfilled') {
-          check.value.signals.forEach(function(s) { results.signals.push(s); });
+        if (check.status === 'fulfilled' && check.value) {
+          (check.value.signals || []).forEach(function(s) { results.signals.push(s); });
           results.score += check.value.score || 0;
           if (check.value.brand) results.brand = check.value.brand;
           if (check.value.explanation) results.explanation = check.value.explanation;
           if (check.value.domainAge) results.domainAge = check.value.domainAge;
         }
       });
+
+      results.score = Math.min(100, results.score);
+
+      // AI only if score is ambiguous (20-69)
+      if (results.score >= 20 && results.score < 70) {
+        var aiResult = await analyzeWithAI(url, null, null);
+        (aiResult.signals || []).forEach(function(s) { results.signals.push(s); });
+        results.score += aiResult.score || 0;
+        if (aiResult.brand) results.brand = aiResult.brand;
+        if (aiResult.explanation) results.explanation = aiResult.explanation;
+        results.score = Math.min(100, results.score);
+      }
+
     } else {
+      // Screenshot analysis always uses AI
       var aiResult = await analyzeWithAI(null, screenshot, imageType);
-      aiResult.signals.forEach(function(s) { results.signals.push(s); });
+      (aiResult.signals || []).forEach(function(s) { results.signals.push(s); });
       results.score += aiResult.score || 0;
       results.brand = aiResult.brand;
       results.explanation = aiResult.explanation;
@@ -183,13 +457,9 @@ app.post('/analyze', async function(req, res) {
     if (results.score >= 70) results.verdict = 'dangerous';
     else if (results.score >= 40) results.verdict = 'suspicious';
 
-    // Deduct tokens if logged in
     if (email) await deductToken(email);
+    await saveAnalysis(email, ip, url ? 'url' : 'screenshot', results.verdict, results.score, results.brand, url);
 
-    // Save analysis
-    await saveAnalysis(email, ip, url ? 'url' : 'screenshot', results.verdict, results.score, results.brand);
-
-    // Add remaining tokens to response
     if (email) {
       var updatedUser = await getUserTokens(email);
       results.tokensRemaining = updatedUser ? updatedUser.tokens : null;
@@ -364,17 +634,32 @@ app.post('/whatsapp', async function(req, res) {
       if (msg.startsWith('http://') || msg.startsWith('https://') || msg.includes('.com') || msg.includes('.net') || msg.includes('.org')) {
         var url = msg;
         if (!url.startsWith('http')) url = 'https://' + url;
-        var checks = await Promise.allSettled([checkGoogleSafeBrowsing(url), checkWhois(url), analyzeWithAI(url, null, null)]);
+        var checks = await Promise.allSettled([
+          Promise.resolve(analyzeUrlPattern(url)),
+          checkGoogleSafeBrowsing(url),
+          checkWhois(url),
+          checkSsl(url),
+          checkRedirects(url)
+        ]);
         var combinedResult = { score: 0, signals: [], brand: null, explanation: null, verdict: 'safe' };
         checks.forEach(function(check) {
-          if (check.status === 'fulfilled') {
-            check.value.signals.forEach(function(s) { combinedResult.signals.push(s); });
+          if (check.status === 'fulfilled' && check.value) {
+            (check.value.signals || []).forEach(function(s) { combinedResult.signals.push(s); });
             combinedResult.score += check.value.score || 0;
             if (check.value.brand) combinedResult.brand = check.value.brand;
             if (check.value.explanation) combinedResult.explanation = check.value.explanation;
           }
         });
         combinedResult.score = Math.min(100, combinedResult.score);
+        // AI only if ambiguous
+        if (combinedResult.score >= 20 && combinedResult.score < 70) {
+          var aiResult = await analyzeWithAI(url, null, null);
+          (aiResult.signals || []).forEach(function(s) { combinedResult.signals.push(s); });
+          combinedResult.score += aiResult.score || 0;
+          if (aiResult.brand) combinedResult.brand = aiResult.brand;
+          if (aiResult.explanation) combinedResult.explanation = aiResult.explanation;
+          combinedResult.score = Math.min(100, combinedResult.score);
+        }
         if (combinedResult.score >= 70) combinedResult.verdict = 'dangerous';
         else if (combinedResult.score >= 40) combinedResult.verdict = 'suspicious';
         replyText = formatWhatsAppReply(combinedResult, url);
@@ -447,6 +732,7 @@ function sendWhatsAppReply(to, body, accountSid, authToken, fromNumber) {
     req.end();
   });
 }
+
 // ─── PAYPAL ─────────────────────────────────────────────────────────────────
 
 async function getPaypalToken() {
@@ -454,7 +740,7 @@ async function getPaypalToken() {
     var auth = Buffer.from(PAYPAL_CLIENT_ID + ':' + PAYPAL_SECRET).toString('base64');
     var body = 'grant_type=client_credentials';
     var options = {
-      hostname: 'api-m.sandbox.paypal.com',
+      hostname: 'api-m.paypal.com',
       path: '/v1/oauth2/token',
       method: 'POST',
       headers: {
@@ -507,7 +793,7 @@ app.post('/create-order', async function(req, res) {
   });
 
   var options = {
-    hostname: 'api-m.sandbox.paypal.com',
+    hostname: 'api-m.paypal.com',
     path: '/v2/checkout/orders',
     method: 'POST',
     headers: {
@@ -541,7 +827,7 @@ app.post('/capture-order', async function(req, res) {
   if (!token) return res.status(500).json({ error: 'PayPal auth failed' });
 
   var options = {
-    hostname: 'api-m.sandbox.paypal.com',
+    hostname: 'api-m.paypal.com',
     path: '/v2/checkout/orders/' + orderID + '/capture',
     method: 'POST',
     headers: {
@@ -581,6 +867,7 @@ app.post('/capture-order', async function(req, res) {
   req2.on('error', function() { res.status(500).json({ error: 'Request failed' }); });
   req2.end();
 });
+
 // ─── EXTENSION ANALYZE ──────────────────────────────────────────────────────
 
 async function checkOpenPhish(url) {
@@ -612,11 +899,19 @@ async function checkOpenPhish(url) {
 
 app.post('/extension-analyze', async function(req, res) {
   var url = req.body.url;
+  var email = req.body.email || null;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
     var results = { url: url, score: 0, signals: [], verdict: 'safe' };
-// Step 0: Check our own Supabase database first
+
+    // Step 0: Check whitelist first
+    if (email && await isWhitelisted(email, url)) {
+      results.signals.push({ type: 'safe', label: 'Whitelist', value: 'Domain is in your trusted list' });
+      return res.json(results);
+    }
+
+    // Step 1: Check our own Supabase database (cache)
     var ownDbResult = await checkOwnDatabase(url);
     if (ownDbResult) {
       ownDbResult.signals.forEach(function(s) { results.signals.push(s); });
@@ -626,43 +921,51 @@ app.post('/extension-analyze', async function(req, res) {
       else if (results.score >= 40) results.verdict = 'suspicious';
       return res.json(results);
     }
-    // Step 1: Google Safe Browsing
-    var googleResult = await checkGoogleSafeBrowsing(url);
-    googleResult.signals.forEach(function(s) { results.signals.push(s); });
-    results.score += googleResult.score || 0;
 
-    // Step 2: OpenPhish
-    var openPhishResult = await checkOpenPhish(url);
-    openPhishResult.signals.forEach(function(s) { results.signals.push(s); });
-    results.score += openPhishResult.score || 0;
+    // Step 2: Run all fast checks in parallel
+    var checks = await Promise.allSettled([
+      Promise.resolve(analyzeUrlPattern(url)),
+      checkGoogleSafeBrowsing(url),
+      checkOpenPhish(url),
+      checkWhois(url),
+      checkSsl(url),
+      checkRedirects(url)
+    ]);
 
-    // Step 3: Domain Age
-    var whoisResult = await checkWhois(url);
-    whoisResult.signals.forEach(function(s) { results.signals.push(s); });
-    results.score += whoisResult.score || 0;
+    checks.forEach(function(check) {
+      if (check.status === 'fulfilled' && check.value) {
+        (check.value.signals || []).forEach(function(s) { results.signals.push(s); });
+        results.score += check.value.score || 0;
+        if (check.value.brand) results.brand = check.value.brand;
+        if (check.value.domainAge) results.domainAge = check.value.domainAge;
+      }
+    });
 
     results.score = Math.min(100, results.score);
 
-    // Step 4: AI only if score is between 20-69 (ambiguous)
+    // Step 3: AI only if score is ambiguous (20-69)
     if (results.score >= 20 && results.score < 70) {
       var aiResult = await analyzeWithAI(url, null, null);
-      aiResult.signals.forEach(function(s) { results.signals.push(s); });
+      (aiResult.signals || []).forEach(function(s) { results.signals.push(s); });
       results.score += aiResult.score || 0;
       if (aiResult.explanation) results.explanation = aiResult.explanation;
+      if (aiResult.brand) results.brand = aiResult.brand;
       results.score = Math.min(100, results.score);
     }
 
     if (results.score >= 70) results.verdict = 'dangerous';
     else if (results.score >= 40) results.verdict = 'suspicious';
-// Save to Supabase
-    await saveAnalysis(null, 'extension', 'url', results.verdict, results.score, results.brand);
+
+    // Save to Supabase (now with URL so cache works correctly)
+    await saveAnalysis(email, 'extension', 'url', results.verdict, results.score, results.brand, url);
 
     res.json(results);
-  
+
   } catch(error) {
     res.status(500).json({ error: 'Analysis failed' });
   }
 });
+
 // ─── START ──────────────────────────────────────────────────────────────────
 
 var PORT = process.env.PORT || 3000;
