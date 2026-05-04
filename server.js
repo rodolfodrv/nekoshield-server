@@ -200,13 +200,33 @@ function analyzeUrlPattern(url) {
       score += 35;
     }
 
-    // 8. Brand + dangerous keyword combination
+    // 8. Brand + dangerous keyword combination + multiple keywords count
     var dangerKeywords = ['login', 'verify', 'secure', 'account', 'update',
       'confirm', 'alert', 'suspend', 'password', 'signin', 'banking', 'validate'];
     var foundKeyword = dangerKeywords.find(function(k) { return fullUrl.includes(k); });
     if (foundBrand && foundKeyword) {
       signals.push({ type: 'warning', label: 'URL Analysis', value: 'Suspicious combination: brand name + action keyword ("' + foundKeyword + '")' });
       score += 15;
+    }
+    var keywordCount = dangerKeywords.filter(function(k) { return fullUrl.includes(k); }).length;
+    if (keywordCount >= 2) {
+      signals.push({ type: 'warning', label: 'URL Analysis', value: 'Multiple suspicious keywords detected (' + keywordCount + ') — strong phishing indicator' });
+      score += 20;
+    }
+
+    // 10. Domain entropy — random-looking domains like xk29mfq.xyz
+    var domainOnly = parts[parts.length - 2] || '';
+    if (domainOnly.length > 4) {
+      var freq = {};
+      domainOnly.split('').forEach(function(c) { freq[c] = (freq[c] || 0) + 1; });
+      var entropy = Object.values(freq).reduce(function(sum, f) {
+        var p = f / domainOnly.length;
+        return sum - p * Math.log2(p);
+      }, 0);
+      if (entropy > 3.5) {
+        signals.push({ type: 'warning', label: 'URL Analysis', value: 'Domain appears randomly generated (high entropy) — common in phishing sites' });
+        score += 20;
+      }
     }
 
     // 9. Typosquatting — known misspellings of major brands
@@ -243,6 +263,40 @@ function analyzeUrlPattern(url) {
   }
 
   return { signals: signals, score: score };
+}
+
+// ─── DNS CHECK ───────────────────────────────────────────────────────────────
+
+function checkDns(url) {
+  return new Promise(function(resolve) {
+    try {
+      var domain = new URL(url).hostname.replace('www.', '');
+      var options = {
+        hostname: 'dns.google',
+        path: '/resolve?name=' + encodeURIComponent(domain) + '&type=MX',
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      };
+      var req = https.request(options, function(response) {
+        var data = '';
+        response.on('data', function(chunk) { data += chunk; });
+        response.on('end', function() {
+          try {
+            var parsed = JSON.parse(data);
+            var hasMx = parsed.Answer && parsed.Answer.length > 0;
+            if (!hasMx) {
+              resolve({ signals: [{ type: 'warning', label: 'DNS Check', value: 'Domain has no mail records (MX) — unusual for legitimate sites' }], score: 10 });
+            } else {
+              resolve({ signals: [{ type: 'safe', label: 'DNS Check', value: 'Domain has valid mail records' }], score: 0 });
+            }
+          } catch(e) { resolve({ signals: [], score: 0 }); }
+        });
+      });
+      req.setTimeout(5000, function() { req.destroy(); resolve({ signals: [], score: 0 }); });
+      req.on('error', function() { resolve({ signals: [], score: 0 }); });
+      req.end();
+    } catch(e) { resolve({ signals: [], score: 0 }); }
+  });
 }
 
 // ─── SSL CHECK ───────────────────────────────────────────────────────────────
@@ -419,7 +473,8 @@ app.post('/analyze', async function(req, res) {
         checkGoogleSafeBrowsing(url),
         checkWhois(url),
         checkSsl(url),
-        checkRedirects(url)
+        checkRedirects(url),
+        checkDns(url)
       ]);
 
       checks.forEach(function(check) {
@@ -639,7 +694,8 @@ app.post('/whatsapp', async function(req, res) {
           checkGoogleSafeBrowsing(url),
           checkWhois(url),
           checkSsl(url),
-          checkRedirects(url)
+          checkRedirects(url),
+          checkDns(url)
         ]);
         var combinedResult = { score: 0, signals: [], brand: null, explanation: null, verdict: 'safe' };
         checks.forEach(function(check) {
@@ -930,7 +986,8 @@ app.post('/extension-analyze', async function(req, res) {
       checkOpenPhish(url),
       checkWhois(url),
       checkSsl(url),
-      checkRedirects(url)
+      checkRedirects(url),
+      checkDns(url)
     ]);
 
     checks.forEach(function(check) {
