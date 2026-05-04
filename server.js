@@ -87,11 +87,21 @@ async function checkOwnDatabase(url) {
   var result = await supabaseRequest('GET', 'analysis_history?url=eq.' + encodeURIComponent(url) + '&order=created_at.desc&limit=1&select=*');
   if (result && result.length > 0) {
     var record = result[0];
+    var reportCount = record.report_count || 0;
     if (record.result === 'dangerous' || record.result === 'suspicious') {
       return {
         signals: [{ type: 'danger', label: 'NekoShield Database', value: 'Previously flagged as ' + record.result }],
         score: record.result === 'dangerous' ? 80 : 40,
-        fromCache: true
+        fromCache: true,
+        reportCount: reportCount
+      };
+    }
+    if (reportCount > 0) {
+      return {
+        signals: [{ type: 'warning', label: 'NekoShield Database', value: reportCount + ' user(s) reported this URL as suspicious' }],
+        score: Math.min(reportCount * 10, 30),
+        fromCache: false,
+        reportCount: reportCount
       };
     }
   }
@@ -923,6 +933,61 @@ app.post('/capture-order', async function(req, res) {
   });
   req2.on('error', function() { res.status(500).json({ error: 'Request failed' }); });
   req2.end();
+});
+
+
+// ─── REPORT URL ─────────────────────────────────────────────────────────────
+
+app.post('/report', async function(req, res) {
+  var url = req.body.url;
+  var email = req.body.email;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  try {
+    // Check if user already reported this URL today
+    if (email) {
+      var today = new Date().toISOString().split('T')[0];
+      var existing = await supabaseRequest('GET', 'analysis_history?url=eq.' + encodeURIComponent(url) + '&email=eq.' + encodeURIComponent(email) + '&type=eq.report&select=*');
+      if (existing && existing.length > 0) {
+        var lastReport = new Date(existing[0].created_at).toISOString().split('T')[0];
+        if (lastReport === today) {
+          return res.status(400).json({ error: 'You already reported this URL today.' });
+        }
+      }
+    }
+
+    // Increment report_count on existing record or create new one
+    var record = await supabaseRequest('GET', 'analysis_history?url=eq.' + encodeURIComponent(url) + '&order=created_at.desc&limit=1&select=*');
+    if (record && record.length > 0) {
+      var newCount = (record[0].report_count || 0) + 1;
+      await supabaseRequest('PATCH', 'analysis_history?url=eq.' + encodeURIComponent(url), { report_count: newCount });
+    } else {
+      await supabaseRequest('POST', 'analysis_history', {
+        email: null, ip_address: 'report', type: 'report',
+        result: 'suspicious', score: 50, brand: null,
+        url: url, report_count: 1
+      });
+    }
+
+    // Give user 5 tokens (= 1 analysis) as reward
+    if (email) {
+      var user = await getUserTokens(email);
+      if (user) {
+        await supabaseRequest('PATCH', 'user_tokens?email=eq.' + encodeURIComponent(email), {
+          tokens: user.tokens + 5
+        });
+      }
+      // Save the report action
+      await supabaseRequest('POST', 'analysis_history', {
+        email: email, ip_address: 'report', type: 'report',
+        result: 'reported', score: 0, brand: null, url: url
+      });
+    }
+
+    res.json({ success: true, tokensAdded: 5, message: 'Report submitted. You earned 1 free analysis!' });
+  } catch(e) {
+    res.status(500).json({ error: 'Could not submit report' });
+  }
 });
 
 // ─── EXTENSION ANALYZE ──────────────────────────────────────────────────────
