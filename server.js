@@ -143,7 +143,7 @@ app.post('/tokens', async function(req, res) {
   if (!email) return res.status(400).json({ error: 'Email required' });
   var user = await getUserTokens(email);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ tokens: user.tokens, total_checks: user.total_checks });
+  res.json({ tokens: user.tokens, total_checks: user.total_checks, report_points: user.report_points || 0 });
 });
 
 // ─── URL PATTERN ANALYSIS (no external API) ─────────────────────────────────
@@ -969,13 +969,25 @@ app.post('/report', async function(req, res) {
       });
     }
 
-    // Give user 5 tokens (= 1 analysis) as reward
+    // Give user 1 report point. Every 10 points = 1 free analysis (5 tokens)
+    var pointsAfter = 0;
+    var analysisEarned = false;
     if (email) {
       var user = await getUserTokens(email);
       if (user) {
+        var currentPoints = user.report_points || 0;
+        var newPoints = currentPoints + 1;
+        var newTokens = user.tokens;
+        if (newPoints >= 10) {
+          newPoints = newPoints - 10;
+          newTokens = newTokens + 5;
+          analysisEarned = true;
+        }
         await supabaseRequest('PATCH', 'user_tokens?email=eq.' + encodeURIComponent(email), {
-          tokens: user.tokens + 5
+          tokens: newTokens,
+          report_points: newPoints
         });
+        pointsAfter = newPoints;
       }
       // Save the report action
       await supabaseRequest('POST', 'analysis_history', {
@@ -984,7 +996,14 @@ app.post('/report', async function(req, res) {
       });
     }
 
-    res.json({ success: true, tokensAdded: 5, message: 'Report submitted. You earned 1 free analysis!' });
+    res.json({
+      success: true,
+      analysisEarned: analysisEarned,
+      pointsAfter: pointsAfter,
+      message: analysisEarned
+        ? 'Report submitted! You reached 10 reports — 1 free analysis added!'
+        : 'Report submitted! ' + (10 - pointsAfter) + ' more reports to earn a free analysis.'
+    });
   } catch(e) {
     res.status(500).json({ error: 'Could not submit report' });
   }
